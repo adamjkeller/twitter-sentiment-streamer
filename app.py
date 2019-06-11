@@ -100,44 +100,6 @@ class StreamModule(cdk.Stack):
         )
 
         self.iam_policy.attach_to_role(self.iam_role)
-# TODO: This belongs in it's own stack; however, because of the cyclical dependency which is a known issue in cloudformation as 
-# each resource is dependent on the other, this needs to be addressed via cdk programatically
-#class StreamDataCurator(cdk.Stack):
-#
-#    def __init__(self, scope: cdk.Stack, id: str, base_module, stream_module, **kwargs):
-#        super().__init__(scope, id, **kwargs)
-#        self.base_module = base_module
-#        self.stream_module = stream_module
-#
-#        self.curator_output_bucket = aws_s3.Bucket(
-#            self, "CuratorBucketTwitterStreamOutput",
-#            bucket_name = self.stack_name,
-#        )
-
-        # Because kinesis firehose bindings are to direct CF, we have to create IAM policy/role and attach on our own
-        #self.curator_iam_role = aws_iam.Role(
-        #    self, "IAMRoleCurator",
-        #    role_name=self.stack_name,
-        #    assumed_by=aws_iam.ServicePrincipal(service='firehose.amazonaws.com'),
-        #)
-
-        ## S3 bucket actions for KFH to write to s3 bucket
-        #self.s3_curator_fh_iam_policy_statement = aws_iam.PolicyStatement()
-        #actions = ["s3:GetBucketLocation", "s3:GetObject", "s3:ListBucket", "s3:ListBucketMultipartUploads", "s3:PutObject"]
-        #for action in actions:
-        #    self.s3_curator_fh_iam_policy_statement.add_action(action)
-        #self.s3_curator_fh_iam_policy_statement.add_resource(self.curator_output_bucket.bucket_arn)
-        #self.s3_curator_fh_iam_policy_statement.add_resource(self.curator_output_bucket.bucket_arn + "/*")
-
-        # Attaching created policy statements to a policy
-        #self.curator_iam_policy = aws_iam.Policy(
-        #    self, "IAMPolicyCurator",
-        #    policy_name=self.stack_name,
-        #    statements=[self.s3_curator_fh_iam_policy_statement],
-        #)
-
-        # Attaching the policy to the IAM role for KFH
-        #self.curator_iam_policy.attach_to_role(self.curator_iam_role)
 
         # Because kinesis firehose bindings are to direct CF, we have to create IAM policy/role and attach on our own
         self.curator_firehose = aws_kinesisfirehose.CfnDeliveryStream(
@@ -232,7 +194,7 @@ class TwitterStreamWorker(cdk.Stack):
         # Added the keys manually, this needs to be imported. Likely should be an argument we pass to stack, ie self.secrets_arn = passed-in-to-constructor
         self.twitter_secrets = aws_secretsmanager.Secret(self, "TwitterSecrets").from_secret_arn(
             self, "TwitterSecretARN",
-            secret_arn=os.getenv("TWITTER_SECRET_ARN") or "arn:aws:secretsmanager:us-west-2:580961807929:secret:prod/twitter-piDdLw"
+            secret_arn=os.getenv("TWITTER_SECRET_ARN")
         )
 
         self.cluster = aws_ecs.Cluster(
@@ -374,13 +336,11 @@ class MainApp(cdk.App):
         self.base_module = BaseModule(self, _stack_name + "-base")
         self.stream_module = StreamModule(self, self._stack_name + "-stream")
         self.twitter_worker = TwitterStreamWorker(self, self._stack_name + "-worker", self.base_module, self.stream_module)
-        # I want the curator worker to be in it's own stack, but this won't work with the reliance on the s3 bucket as the event due to circular dependency
-        #self.curator_worker = StreamDataCurator(self, _stack_name + "-curator", self.base_module, self.stream_module)
         self.database_module = TwitterDatabase(self, _stack_name + "-database", self.base_module, self.stream_module)
 
 
 if __name__ == '__main__':
-    _environment = os.getenv('ENVIRONMENT') or 'development'
-    _stack_name = os.getenv('STACK_NAME') or 'keladam-twitter-stream'
+    _environment = os.getenv('ENVIRONMENT')
+    _stack_name = os.getenv('STACK_NAME')
     app = MainApp(_stack_name=_stack_name + "-" + _environment)
     app.run()
