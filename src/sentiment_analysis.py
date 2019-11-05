@@ -41,11 +41,13 @@ class SentimentAnalysis(object):
             created_date = raw_tweet_data.get('created_at')
             tweet = raw_tweet_data['retweeted_status']['full_text']
             tweet_id = raw_tweet_data['retweeted_status']['id']
+            media_url = raw_tweet_data['retweeted_status']['extended_entities']['media'][0]['media_url']
             tweet_length = len(tweet)
         else:
             created_date = raw_tweet_data.get('created_at')
             tweet = raw_tweet_data['full_text']
             tweet_id = raw_tweet_data['id']
+            media_url = raw_tweet_data['extended_entities']['media'][0]['media_url']
             tweet_length = len(tweet)
 
         sentiment, sentiment_details = self.get_sentiment(tweet)
@@ -56,7 +58,8 @@ class SentimentAnalysis(object):
             "tweet": tweet,
             "tweet_id": tweet_id,
             "sentiment": sentiment,
-            "sentiment_details": sentiment_details
+            "sentiment_details": sentiment_details,
+            "media_url": media_url
         }
 
         # Ship data to firehose which will put in curated s3 bucket
