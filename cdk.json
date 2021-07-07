@@ -1,3 +1,6 @@
 {
-    "app": "python3 app.py"
+  "app": "python3 app.py",
+  "context": {
+    "TWITTER_SECRET_ARN": "ARN_GOES_HERE"
+  }
 }

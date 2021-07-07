@@ -1,10 +1,10 @@
-#!/usr/bin/env python3
 import os
 import sh
 from aws_cdk import (
     aws_ec2,
     aws_ecs,
     aws_ecr,
+    aws_ecr_assets,
     aws_glue,
     aws_iam,
     aws_kinesisfirehose,
@@ -15,26 +15,21 @@ from aws_cdk import (
     aws_secretsmanager,
     aws_sqs,
     aws_ssm,
-    cdk
+    core
 )
 
 
-class BaseModule(cdk.Stack):
+class BaseModule(core.Stack):
 
-    def __init__(self, scope: cdk.Stack, id: str, **kwargs):
+    def __init__(self, scope: core.Stack, id: str, **kwargs):
         super().__init__(scope, id, **kwargs)
 
-        self.vpc = aws_ec2.Vpc(
-            self, "BaseVPC",
-            cidr='10.0.0.0/24',
-            enable_dns_support=True,
-            enable_dns_hostnames=True,
-        )
+        self.vpc = aws_ec2.Vpc(self, "BaseVPC")
 
 
-class StreamModule(cdk.Stack):
+class StreamModule(core.Stack):
 
-    def __init__(self, scope: cdk.Stack, id: str, **kwargs):
+    def __init__(self, scope: core.Stack, id: str, **kwargs):
         super().__init__(scope, id, **kwargs)
 
         self.output_bucket = aws_s3.Bucket(
@@ -55,9 +50,9 @@ class StreamModule(cdk.Stack):
         self.s3_iam_policy_statement = aws_iam.PolicyStatement()
         actions = ["s3:GetBucketLocation", "s3:GetObject", "s3:ListBucket", "s3:ListBucketMultipartUploads", "s3:PutObject"]
         for action in actions:
-            self.s3_iam_policy_statement.add_action(action)
-        self.s3_iam_policy_statement.add_resource(self.output_bucket.bucket_arn)
-        self.s3_iam_policy_statement.add_resource(self.output_bucket.bucket_arn + "/*")
+            self.s3_iam_policy_statement.add_actions(action)
+        self.s3_iam_policy_statement.add_resources(self.output_bucket.bucket_arn)
+        self.s3_iam_policy_statement.add_resources(self.output_bucket.bucket_arn + "/*")
 
         # CW error log setup
         self.s3_error_logs_group = aws_logs.LogGroup(
@@ -141,28 +136,28 @@ class StreamModule(cdk.Stack):
             function_name="{}-curator".format(self.stack_name),
             code=aws_lambda.AssetCode(zip_file),
             handler="sentiment_analysis.lambda_handler",
-            runtime=aws_lambda.Runtime.PYTHON37,
-            tracing=aws_lambda.Tracing.Active,
+            runtime=aws_lambda.Runtime.PYTHON_3_7,
+            tracing=aws_lambda.Tracing.ACTIVE,
             description="Triggers from S3 PUT event for twitter stream data and transorms it to clean json syntax with sentiment analysis attached",
             environment={
                 "STACK_NAME": self.stack_name,
                 "FIREHOSE_STREAM": self.curator_firehose.delivery_stream_name
             },
             memory_size=128,
-            timeout=120,
-            log_retention_days=aws_logs.RetentionDays.OneWeek,
+            timeout=core.Duration.seconds(120),
+            log_retention=aws_logs.RetentionDays.ONE_WEEK,
         )
 
         # Permission to talk to comprehend for sentiment analysis
         self.comprehend_iam_policy_statement = aws_iam.PolicyStatement()
-        self.comprehend_iam_policy_statement.add_action('comprehend:*')
+        self.comprehend_iam_policy_statement.add_actions('comprehend:*')
         self.comprehend_iam_policy_statement.add_all_resources()
         self.twitter_stream_curator_lambda_function.add_to_role_policy(self.comprehend_iam_policy_statement)
 
         # Permission to put in kinesis firehose
         self.curator_firehose_iam_policy_statement = aws_iam.PolicyStatement()
-        self.curator_firehose_iam_policy_statement.add_action('firehose:Put*')
-        self.curator_firehose_iam_policy_statement.add_resource(self.curator_firehose.delivery_stream_arn)
+        self.curator_firehose_iam_policy_statement.add_actions('firehose:Put*')
+        self.curator_firehose_iam_policy_statement.add_resources(self.curator_firehose.attr_arn)
         self.twitter_stream_curator_lambda_function.add_to_role_policy(self.curator_firehose_iam_policy_statement)
 
         # Attaching the policy to the IAM role for KFH
@@ -172,7 +167,7 @@ class StreamModule(cdk.Stack):
             aws_lambda_event_sources.S3EventSource(
                 bucket=self.output_bucket,
                 events=[
-                    aws_s3.EventType.ObjectCreated
+                    aws_s3.EventType.OBJECT_CREATED
                 ],
                 filters=[
                     aws_s3.NotificationKeyFilter(
@@ -184,9 +179,9 @@ class StreamModule(cdk.Stack):
 
 
 
-class TwitterStreamWorker(cdk.Stack):
+class TwitterStreamWorker(core.Stack):
 
-    def __init__(self, scope: cdk.Stack, id: str, base_module, stream_module, **kwargs):
+    def __init__(self, scope: core.Stack, id: str, base_module, stream_module, **kwargs):
         super().__init__(scope, id, **kwargs)
         self.base_module = base_module
         self.stream_module = stream_module
@@ -194,17 +189,12 @@ class TwitterStreamWorker(cdk.Stack):
         # Added the keys manually, this needs to be imported. Likely should be an argument we pass to stack, ie self.secrets_arn = passed-in-to-constructor
         self.twitter_secrets = aws_secretsmanager.Secret(self, "TwitterSecrets").from_secret_arn(
             self, "TwitterSecretARN",
-            secret_arn=os.getenv("TWITTER_SECRET_ARN")
+            secret_arn=self.node.try_get_context("TWITTER_SECRET_ARN")
         )
 
         self.cluster = aws_ecs.Cluster(
             self, "ECSCluster",
             vpc=self.base_module.vpc,
-        )
-
-        self.image_repo = aws_ecr.Repository.from_repository_name(
-            self, "ECRImport",
-            repository_name=self.stack_name
         )
 
         #Queue to push last updated id
@@ -213,27 +203,33 @@ class TwitterStreamWorker(cdk.Stack):
             queue_name="{}.fifo".format(self.stack_name),
             fifo=True,
             content_based_deduplication=True,
-            visibility_timeout_sec=90
+            visibility_timeout=core.Duration.seconds(90)
         )
 
         # SSM parameter to indicate if initial run has occurred
         self.initial_run_parameter = aws_ssm.StringParameter(
             self, "StringParameterInitialRun",
-            name="/{}-NOT-first-run".format(self.stack_name), # TODO: This is how naming should work with slash in front
+            parameter_name=f"/{self.stack_name}-NOT-first-run",
             string_value='False',
             description="Parameter for twitter stream feed to set to true after first run has occurred and an object has been put in queue"
         )
 
         self.task_definition = aws_ecs.FargateTaskDefinition(
             self, "TwitterWorkerTD",
-            cpu='256',
-            memory_mi_b='0.5GB',
+            cpu=256,
+            memory_limit_mib=512
         )
 
         self.task_definition.add_container(
             "ContainerImage",
-            image=aws_ecs.ContainerImage.from_ecr_repository(self.image_repo, tag='latest'),
-            logging=aws_ecs.AwsLogDriver(self, "AWSLogsDriver", stream_prefix=self.stack_name, log_retention_days=aws_logs.RetentionDays.ThreeDays),
+            image=aws_ecs.ContainerImage.from_docker_image_asset(
+                aws_ecr_assets.DockerImageAsset(
+                    self, "DockerImage",
+                    directory='./',
+                    exclude=["cdk.out"]
+                )
+            ),
+            logging=aws_ecs.AwsLogDriver(stream_prefix=self.stack_name, log_retention=aws_logs.RetentionDays.THREE_DAYS),
             environment={
                 "FIREHOSE_NAME": self.stream_module.firehose.delivery_stream_name,
                 "SQS_QUEUE_NAME": self.twitter_id_queue.queue_name,
@@ -242,17 +238,22 @@ class TwitterStreamWorker(cdk.Stack):
                 "SINCE_DATE": '2019-03-01',
                 "WORLD_ID": '23424977'
             },
+            secrets=[
+                aws_ecs.Secret.from_secrets_manager(
+                    secret=self.twitter_secrets
+                )
+            ]
         )
 
         # IAM Permissions for fargate task
         # Adding firehose put policy
         self.firehose_iam_policy_statement = aws_iam.PolicyStatement()
-        self.firehose_iam_policy_statement.add_action('firehose:Put*')
-        self.firehose_iam_policy_statement.add_resource(self.stream_module.firehose.delivery_stream_arn)
+        self.firehose_iam_policy_statement.add_actions('firehose:Put*')
+        self.firehose_iam_policy_statement.add_resources(self.stream_module.firehose.attr_arn)
 
         # Permission to talk to comprehend for sentiment analysis
         self.comprehend_iam_policy_statement = aws_iam.PolicyStatement()
-        self.comprehend_iam_policy_statement.add_action('comprehend:*')
+        self.comprehend_iam_policy_statement.add_actions('comprehend:*')
         self.comprehend_iam_policy_statement.add_all_resources()
 
         self.task_iam_policy = aws_iam.Policy(
@@ -272,15 +273,13 @@ class TwitterStreamWorker(cdk.Stack):
             self, "TwitterWorker",
             service_name=self.stack_name,
             task_definition=self.task_definition,
-            cluster=self.cluster,
-            maximum_percent=100,
-            minimum_healthy_percent=0
+            cluster=self.cluster
         )
 
 
-class TwitterDatabase(cdk.Stack):
+class TwitterDatabase(core.Stack):
 
-    def __init__(self, scope: cdk.Stack, id: str, base_module, stream_module, **kwargs):
+    def __init__(self, scope: core.Stack, id: str, base_module, stream_module, **kwargs):
         super().__init__(scope, id, **kwargs)
         self.base_module = base_module
         self.stream_module = stream_module
@@ -292,12 +291,17 @@ class TwitterDatabase(cdk.Stack):
         )
 
         # Attaching the default aws managed role, and s3 access policy to curated bucket path
-        self.glue_service_iam_role.attach_managed_policy('arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole')
+        self.glue_service_iam_role.add_managed_policy(
+            policy=aws_iam.ManagedPolicy.from_managed_policy_arn(
+                self, "GlueServiceRole",
+                'arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole'
+            )
+        )
         self.glue_s3_iam_policy_statement = aws_iam.PolicyStatement()
         actions = ["s3:GetObject", "s3:PutObject"]
         for action in actions:
-            self.glue_s3_iam_policy_statement.add_action(action)
-        self.glue_s3_iam_policy_statement.add_resource(self.stream_module.output_bucket.bucket_arn + '/twitter-curated/*')
+            self.glue_s3_iam_policy_statement.add_actions(action)
+        self.glue_s3_iam_policy_statement.add_resources(self.stream_module.output_bucket.bucket_arn + '/twitter-curated/*')
 
         self.glue_iam_policy = aws_iam.Policy(
             self, "GlueIAMPolicy",
@@ -327,7 +331,7 @@ class TwitterDatabase(cdk.Stack):
 
 
 
-class MainApp(cdk.App):
+class MainApp(core.App):
 
     def __init__(self, _stack_name, **kwargs):
         super().__init__(**kwargs)
@@ -340,7 +344,7 @@ class MainApp(cdk.App):
 
 
 if __name__ == '__main__':
-    _environment = os.getenv('ENVIRONMENT')
-    _stack_name = os.getenv('STACK_NAME')
+    _environment = os.getenv('ENVIRONMENT') or "dev"
+    _stack_name = os.getenv('STACK_NAME') or  "demo"
     app = MainApp(_stack_name=_stack_name + "-" + _environment)
-    app.run()
+    app.synth()

@@ -11,7 +11,7 @@ class SecretsManager(object):
     def __init__(self):
         self.client = boto3.client('secretsmanager') 
 
-    def setup_secrets(self, secret_id='prod/twitter'):
+    def setup_secrets(self, secret_id='prod/twitter-secrets'):
         """
         Expecting a dictionary that will return the necessary secrets to access Twitter API
         """
