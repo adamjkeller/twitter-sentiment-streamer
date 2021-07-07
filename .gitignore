@@ -6,3 +6,4 @@ api-keys
 cdk.out
 cdk.context.json
 env_vars.sh
+cdk.json
